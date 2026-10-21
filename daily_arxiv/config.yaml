@@ -1,0 +1,8 @@
+arxiv:
+  categories:  # 文章类型
+    - cond-mat.supr-con
+    - cond-mat.str-el
+    - cond-mat.mtrl-sci
+
+llm:
+  model_name: 'deepseek-chat'  # 使用的LLM模型
