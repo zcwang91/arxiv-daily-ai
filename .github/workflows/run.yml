@@ -6,9 +6,16 @@ name: arXiv-daily-ai-enhanced
 on:
   schedule:
     # 周一至周五 04:05 UTC = 北京时间 12:05(UTC+8)，周六周日不触发
-    # 选 :05 而不是 :00，避开 GitHub 整点调度高峰
+    # 注意：2026-08-26 之后 GitHub 对非热门仓库的 schedule 统一延迟 5-6 小时，
+    # 这条 cron 实际约在北京时间 17:20 才起跑，现在只作兜底。
+    # 准点更新由外部定时器在 12:00 调 workflow_dispatch 完成。
     - cron: "5 4 * * 1-5"
   workflow_dispatch:
+    inputs:
+      force:
+        description: "强制重跑（忽略「当日数据已完成」检查）"
+        type: boolean
+        default: false
 
 # 新仓库默认 GITHUB_TOKEN 为只读，必须显式放开写权限，否则推送 data/main 分支会 403
 permissions:
@@ -20,7 +27,55 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # 幂等前哨：当日数据（原始 + AI 增强）都已存在于 data 分支时直接跳过，
+  # 避免外部定时器与 GitHub 延迟 cron 在同一天各跑一遍、重复消耗 AI 额度。
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - name: 检查当日数据是否已完成 / Check if today's data is already complete
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          LANG_NAME: ${{ vars.LANGUAGE }}
+        run: |
+          today=$(date -u "+%Y-%m-%d")
+          force="${{ inputs.force }}"
+          echo "today=${today}  force=${force}  language=${LANG_NAME}"
+
+          if [ "${force}" = "true" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "force=true，强制执行 / forced run"
+            exit 0
+          fi
+
+          api="${GITHUB_API_URL}/repos/${REPO}/contents"
+          raw_code=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${api}/data/${today}.jsonl?ref=data")
+          ai_code=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${api}/data/${today}_AI_enhanced_${LANG_NAME}.jsonl?ref=data")
+
+          echo "原始文件 data/${today}.jsonl            -> HTTP ${raw_code}"
+          echo "AI文件   data/${today}_AI_enhanced_${LANG_NAME}.jsonl -> HTTP ${ai_code}"
+
+          if [ "${raw_code}" = "200" ] && [ "${ai_code}" = "200" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "✅ 当日数据已完整生成，跳过本次运行 / Today's data already complete, skipping"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "↻ 当日数据未完成，继续执行 / Today's data incomplete, proceeding"
+          fi
+
   build:
+    needs: guard
+    if: needs.guard.outputs.skip != 'true'
 
     runs-on: ubuntu-latest
     timeout-minutes: 90
