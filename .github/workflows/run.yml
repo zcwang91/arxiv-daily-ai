@@ -129,7 +129,17 @@ jobs:
       run: |
         source .venv/bin/activate
         echo "执行去重检查... / Performing intelligent deduplication check..."
-        
+
+        # 运行器里 main 分支没有 data/ 目录（数据都在 data 分支），
+        # 不预先把历史数据放进来，check_stats.py 的历史库就永远是空的，去重形同虚设，
+        # 表现为：arXiv 新列表尚未发布时会把昨天的列表当成今天的内容重复提交。
+        mkdir -p data
+        for i in 1 2 3 4 5 6 7; do
+          d=$(date -u -d "-${i} day" +%F)
+          curl -sfo "data/${d}.jsonl" "https://raw.githubusercontent.com/${{ github.repository }}/data/data/${d}.jsonl" || true
+        done
+        echo "参与去重的数据文件数: $(ls -1 data/*.jsonl 2>/dev/null | wc -l)"
+
         cd daily_arxiv
         # 执行去重检查脚本 / Execute intelligent deduplication check script
         set +e  # 暂时允许命令失败 / Temporarily allow command failure
@@ -138,6 +148,14 @@ jobs:
         # 获取退出码 / Get exit code
         dedup_exit_code=$?
         set -e  # 恢复严格模式 / Restore strict mode
+
+        cd ..
+        # 清理临时拉取的历史文件，避免污染后续生成的 file-list
+        # Clean up temporarily fetched history files so they don't pollute file-list
+        for i in 1 2 3 4 5 6 7; do
+          d=$(date -u -d "-${i} day" +%F)
+          rm -f "data/${d}.jsonl"
+        done
         
         echo "去重检查退出码: $dedup_exit_code / Dedup check exit code: $dedup_exit_code"
         echo "dedup_exit_code=$dedup_exit_code" >> $GITHUB_OUTPUT
